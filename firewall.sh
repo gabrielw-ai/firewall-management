@@ -1,10 +1,10 @@
 if [ "$EUID" -ne 0 ]; then
-    echo "[!] Tolong jalankan script ini sebagai ROOT (sudo)!"
+    echo "[!] Please run this script as ROOT (sudo)!"
     exit 1
 fi
 
 # =======================================================
-# 1. DETEKSI OS & AUTO-INSTALL DEPENDENCIES
+# 1. OS DETECTION & AUTO-INSTALL DEPENDENCIES
 # =======================================================
 detect_and_setup_os() {
     if [ -f /etc/os-release ]; then
@@ -12,7 +12,7 @@ detect_and_setup_os() {
         OS_NAME=$ID
         OS_VERSION=$VERSION_ID
     else
-        echo "[!] OS tidak terdeteksi."
+        echo "[!] OS not detected."
         exit 1
     fi
 
@@ -47,14 +47,14 @@ detect_and_setup_os() {
 detect_and_setup_os
 
 # =======================================================
-# 2. MANAJEMEN KONFIGURASI PERSISTEN
+# 2. PERSISTENT CONFIGURATION MANAGEMENT
 # =======================================================
 CONFIG_FILE="/etc/manage-fw.conf"
 
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 else
-    PUBLIC_PORTS="80"
+    PUBLIC_PORTS=""
     RESTRICTED_RULES=""
 fi
 
@@ -64,23 +64,33 @@ save_config() {
 }
 
 # =======================================================
-# 3. ENGINE IPTABLES CORE
+# 3. IPTABLES CORE ENGINE
 # =======================================================
 apply_rules() {
-    echo -e "\n[+] Membersihkan rule lama & menerapkan konfigurasi baru..."
+    echo -e "\n[+] Flushing existing rules and applying new configuration..."
     iptables -F
     iptables -X
     iptables -Z
     
+    # Default Policy
     iptables -P INPUT ACCEPT
     iptables -P FORWARD ACCEPT
     iptables -P OUTPUT ACCEPT
     
-    iptables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+    # State tracking via modern conntrack module
+    iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    
+    # Allow ICMP (Ping) and Loopback interface
     iptables -A INPUT -p icmp -j ACCEPT
     iptables -A INPUT -i lo -j ACCEPT
     
-    echo "[+] Menerapkan Granular Whitelist Port..."
+    # Allow forwarding for VPN virtual interfaces
+    iptables -A FORWARD -i tun+ -j ACCEPT
+    iptables -A FORWARD -i wg+ -j ACCEPT
+    iptables -A FORWARD -i ppp+ -j ACCEPT
+
+    echo "[+] Applying Granular Whitelist Rules..."
     local restricted_ports=$(echo "$RESTRICTED_RULES" | tr ' ' '\n' | cut -d':' -f1 | sort -u | tr '\n' ' ')
     
     for rule in $RESTRICTED_RULES; do
@@ -89,7 +99,7 @@ apply_rules() {
         if [ ! -z "$port" ] && [ ! -z "$ip" ]; then
             iptables -A INPUT -p tcp -s "$ip" --dport "$port" -j ACCEPT
             iptables -A INPUT -p udp -s "$ip" --dport "$port" -j ACCEPT
-            echo "    -> [ALLOWED] IP $ip boleh akses Port $port (TCP/UDP)"
+            echo "    -> [ACCEPT] Source: $ip -> Destination Port: $port (TCP/UDP)"
         fi
     done
     
@@ -97,46 +107,51 @@ apply_rules() {
         if [ ! -z "$r_port" ]; then
             iptables -A INPUT -p tcp --dport "$r_port" -j DROP
             iptables -A INPUT -p udp --dport "$r_port" -j DROP
-            echo "    -> [GATED] Port $r_port dikunci rapat dari publik!"
+            echo "    -> [DROP] Destination Port: $r_port (Global/Public)"
         fi
     done
     
-    echo "[+] Membuka Public Ports..."
+    echo "[+] Opening Public Ports..."
     for port in $PUBLIC_PORTS; do
         if [ ! -z "$port" ]; then
             iptables -A INPUT -p tcp --dport "$port" -j ACCEPT
             iptables -A INPUT -p udp --dport "$port" -j ACCEPT
-            echo "    -> [OPEN PUBLIC] Port $port terbuka untuk semua IP"
+            echo "    -> [ACCEPT] Destination Port: $port (Any Source)"
         fi
     done
     
+    # Global catch-all block for restricted zones
     if [ ! -z "$RESTRICTED_RULES" ]; then
         iptables -A INPUT -j REJECT --reject-with icmp-host-prohibited
         iptables -A FORWARD -j REJECT --reject-with icmp-host-prohibited
     fi
     
-    echo "[+] Menyimpan aturan ke sistem agar persisten..."
+    echo "[+] Saving rules to system storage..."
     eval $SAVE_COMMAND > /dev/null 2>&1
-    echo "[+] Sukses! Semua aturan berhasil dipasang secara aktif and persisten."
+    echo "[+] Success: All firewall rules deployed and persistent."
 }
 
 show_status() {
     clear
     echo "========================================================="
-    echo "        EASY FIREWALL MANAGER           "
+    echo "        DYNAMIC GRANULAR FIREWALL MANAGER v3.8           "
     echo "========================================================="
-    echo "  [PORT BUKA UNTUK PUBLIK (Both TCP/UDP)]"
-    echo "  -> $PUBLIC_PORTS"
+    echo "  [PUBLIC OPEN PORTS (TCP/UDP)]"
+    if [ -z "$PUBLIC_PORTS" ] || [ "$PUBLIC_PORTS" == " " ]; then
+        echo "  -> (None)"
+    else
+        echo "  -> $PUBLIC_PORTS"
+    fi
     echo "---------------------------------------------------------"
-    echo "  [PORT GRANULAR (Hanya IP tertentu yang bisa akses)]"
+    echo "  [GRANULAR RESTRICTED RULES (Port access restricted by IP)]"
     if [ -z "$RESTRICTED_RULES" ] || [ "$RESTRICTED_RULES" == " " ]; then
-        echo "  -> (Kosong)"
+        echo "  -> (None)"
     else
         for rule in $RESTRICTED_RULES; do
             local p=$(echo "$rule" | cut -d':' -f1)
             local i=$(echo "$rule" | cut -d':' -f2)
             if [ ! -z "$p" ] && [ ! -z "$i" ]; then
-                echo "  -> Port $p hanya untuk IP: $i"
+                echo "  -> Port $p restricted to IP/Subnet: $i"
             fi
         done
     fi
@@ -148,43 +163,39 @@ show_status() {
 # =======================================================
 while true; do
     show_status
-    echo "PILIH MENU:"
-    echo "1) Auto Detect & Open All Listening Ports"
-    echo "2) Add Open Port for Public (Comma / Space Separated, ex: 80, 53)"
-    echo "3) Delete (Block) Port for Public"
-    echo "4) Add Granular Port (Lock Port to Spesific IP Address)"
-    echo "5) Delete Granular Port"
-    echo "6) Flush & Open All Ports"
-    echo "7) Apply & Save"
-    echo "8) Check IP Tables Rules"
+    echo "SELECT AN OPTION:"
+    echo "1) Auto-detect all listening ports and add to public list"
+    echo "2) Add public open ports (comma or space separated)"
+    echo "3) Remove public open ports"
+    echo "4) Add granular rule (restrict port to specific IP/Subnet)"
+    echo "5) Remove granular rule"
+    echo "6) Disable firewall completely (Flush and accept all)"
+    echo "7) Apply and save active rules"
+    echo "8) View live running iptables rules"
     echo "9) Exit"
-    read -p "Enter your choices [1-9]: " opsi
+    read -p "Enter selection [1-9]: " opsi
 
     case $opsi in
         1)
-            echo -e "\n[+] Mencari port yang sedang berstatus LISTEN di sistem..."
-            
-            # Strategi Baru v3.6: Hancurkan semua spasi berlebih, cari semua teks sebelum users:(
-            # Tangkap pola titik dua + angka (:PORT) baik format IPv4, IPv6, maupun bintang (*)
+            echo -e "\n[+] Scanning system for active listening ports..."
             if command -v ss &> /dev/null; then
                 detected_list=$(ss -tulpn | tr -s ' ' | grep -vi "peer" | sed -E 's/users:\(\(.*//g' | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -n -u | tr '\n' ' ')
             else
                 detected_list=$(netstat -tulpn | tr -s ' ' | grep -i "listen" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -n -u | tr '\n' ' ')
             fi
 
-            # Keamanan: Buang port 0 atau spasi kosong liar jika ada
             detected_list=$(echo "$detected_list" | sed -E 's/\b(0)\b//g' | tr -s ' ')
 
             if [ -z "$detected_list" ] || [ "$detected_list" == " " ] || [ "$detected_list" == "" ]; then
-                echo "[!] Tidak mendeteksi ada port yang sedang listen aktif saat ini."
+                echo "[!] No active listening ports detected."
                 sleep 2
             else
                 comma_view=$(echo "$detected_list" | tr ' ' ',' | sed 's/,$//' | sed 's/^,//')
-                echo -e "-> Menemukan port aktif: \033[1;32m$comma_view\033[0m"
+                echo -e "-> Detected active ports: \033[1;32m$comma_view\033[0m"
                 
-                read -p "Apakah kamu yakin ingin memasukkan SEMUA port tersebut ke daftar PUBLIC OPEN? (y/n): " konfirmasi
+                read -p "Add ALL detected ports to the public list? (y/n): " konfirmasi
                 if [[ "$konfirmasi" == "y" || "$konfirmasi" == "Y" ]]; then
-                    if [[ "$PUBLIC_PORTS" == *"Semua Port"* ]]; then
+                    if [[ "$PUBLIC_PORTS" == *"Firewall Disabled"* ]]; then
                         PUBLIC_PORTS=""
                     fi
                     
@@ -196,17 +207,17 @@ while true; do
                     
                     PUBLIC_PORTS=$(echo $PUBLIC_PORTS | tr -s ' ' | sed -e 's/^[ \t]*//;s/[ \t]*$//')
                     save_config
-                    echo "[+] Sukses mengimpor daftar port otomatis. Silakan jalankan Menu 7 (Apply) untuk mengaktifkan."
-                    sleep 2.5
+                    echo "[+] Ports imported to temporary list. Run Option 7 to apply changes."
+                    sleep 2
                 else
-                    echo "[!] Dibatalkan."; sleep 1
+                    echo "[!] Operation cancelled."; sleep 1
                 fi
             fi
             ;;
         2)
-            read -p "Masukkan port baru (contoh: 80,443,3000 atau 80 443 3000): " input_ports
+            read -p "Enter new public ports (e.g., 80,443,3000 or 80 443 3000): " input_ports
             cleaned_ports=$(echo "$input_ports" | tr ',' ' ' | tr -s ' ')
-            if [[ "$PUBLIC_PORTS" == *"Semua Port"* ]]; then PUBLIC_PORTS=""; fi
+            if [[ "$PUBLIC_PORTS" == *"Firewall Disabled"* ]]; then PUBLIC_PORTS=""; fi
 
             any_valid=false
             for port in $cleaned_ports; do
@@ -216,19 +227,19 @@ while true; do
                     fi
                     any_valid=true
                 else
-                    echo "[!] Port '$port' tidak valid (bukan angka), dilewati."
+                    echo "[!] Invalid port '$port' (not an integer), skipping."
                 fi
             done
             PUBLIC_PORTS=$(echo $PUBLIC_PORTS | tr -s ' ' | sed -e 's/^[ \t]*//;s/[ \t]*$//')
             save_config
             if [ "$any_valid" = true ]; then
-                echo "[+] Port berhasil ditambahkan ke list temporary."; sleep 1
+                echo "[+] Ports added to temporary list."; sleep 1
             else
-                echo "[!] Tidak ada port valid yang ditambahkan."; sleep 1.5
+                echo "[!] No valid ports entered."; sleep 1.5
             fi
             ;;
         3)
-            read -p "Masukkan port umum yang mau dihapus (bisa pisah koma/spasi): " del_ports
+            read -p "Enter public ports to remove (comma or space separated): " del_ports
             cleaned_del=$(echo "$del_ports" | tr ',' ' ' | tr -s ' ')
             for port in $cleaned_del; do
                 PUBLIC_PORTS=$(echo $PUBLIC_PORTS | sed -e "s/\b$port\b//g")
@@ -237,8 +248,8 @@ while true; do
             save_config
             ;;
         4)
-            read -p "Masukkan nomor port yang mau dikunci (misal: 53, 3306): " g_port
-            read -p "Masukkan IP/Subnet yang diizinkan (misal: 1.1.1.1 atau 10.0.0.0/24): " g_ip
+            read -p "Enter port number to restrict (e.g., 53, 3306): " g_port
+            read -p "Enter allowed IP/Subnet (e.g., 1.1.1.1 or 10.0.0.0/24): " g_ip
             if [ ! -z "$g_port" ] && [ ! -z "$g_ip" ]; then
                 new_rule="$g_port:$g_ip"
                 [[ ! " $RESTRICTED_RULES " =~ " $new_rule " ]] && RESTRICTED_RULES="$RESTRICTED_RULES $new_rule"
@@ -246,14 +257,14 @@ while true; do
             fi
             ;;
         5)
-            echo "Ketik persis format 'PORT:IP' yang ingin dihapus dari list status di atas."
-            read -p "Masukkan target rule (contoh 53:202.10.44.110): " del_rule
+            echo "Enter the exact 'PORT:IP' format to remove as listed in the status above."
+            read -p "Enter target rule (e.g., 53:1.1.1.1): " del_rule
             local escaped_del_rule=$(echo "$del_rule" | sed 's|/|\\/|g')
             RESTRICTED_RULES=$(echo $RESTRICTED_RULES | sed -e "s|\b$escaped_del_rule\b||g" -e 's/^[ \t]*//;s/[ \t]*$//')
             save_config
             ;;
         6)
-            read -p "Apakah kamu yakin ingin MENGHAPUS ALL RULES dan MEMBUKA SEMUA PORT? (y/n): " konfirmasi
+            read -p "Are you sure you want to flush all rules and open all ports? (y/n): " konfirmasi
             if [[ "$konfirmasi" == "y" || "$konfirmasi" == "Y" ]]; then
                 iptables -F
                 iptables -X
@@ -263,34 +274,35 @@ while true; do
                 iptables -P OUTPUT ACCEPT
                 eval $SAVE_COMMAND > /dev/null 2>&1
                 
-                PUBLIC_PORTS="Semua Port Terbuka (Firewall OFF)"
+                PUBLIC_PORTS="Firewall Disabled (ACCEPT ALL)"
                 RESTRICTED_RULES=""
                 save_config
-                echo "[+] FIREWALL DI-FLUSH TOTAL! Semua port sekarang TERBUKA LEBAR (ACCEPT ALL)."
+                echo "[+] Firewall flushed. All targets set to ACCEPT."
                 sleep 2
             fi
             ;;
         7)
-            if [[ "$PUBLIC_PORTS" == *"Semua Port"* ]]; then
-                PUBLIC_PORTS="1745 443 853 8080"
+            if [[ "$PUBLIC_PORTS" == *"Firewall Disabled"* ]]; then
+                PUBLIC_PORTS=""
             fi
             apply_rules
-            read -p "Tekan [Enter] untuk kembali..."
+            read -p "Press [Enter] to continue..."
             ;;
         8)
             clear
             echo "=== CURRENT ACTIVE IPTABLES RULES ==="
             iptables -L -n -v --line-numbers
             echo "====================================="
-            read -p "Tekan [Enter] untuk kembali..."
+            read -p "Press [Enter] to continue..."
             ;;
         9)
-            echo "Keluar."
+            echo "Exiting."
             exit 0
             ;;
         *)
-            echo "Pilihan tidak valid!"
+            echo "Invalid selection!"
             sleep 1
             ;;
     esac
 done
+EOF
