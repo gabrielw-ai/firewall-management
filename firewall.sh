@@ -54,7 +54,7 @@ CONFIG_FILE="/etc/manage-fw.conf"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 else
-    PUBLIC_PORTS="1745 443 853 8080"
+    PUBLIC_PORTS="80"
     RESTRICTED_RULES=""
 fi
 
@@ -123,7 +123,7 @@ apply_rules() {
 show_status() {
     clear
     echo "========================================================="
-    echo "        DYNAMIC GRANULAR FIREWALL MANAGER v3.6           "
+    echo "        EASY FIREWALL MANAGER           "
     echo "========================================================="
     echo "  [PORT BUKA UNTUK PUBLIK (Both TCP/UDP)]"
     echo "  -> $PUBLIC_PORTS"
@@ -149,16 +149,16 @@ show_status() {
 while true; do
     show_status
     echo "PILIH MENU:"
-    echo "1) AUTO-DETECT ALL LISTENING PORTS & OPEN (Rekomendasi Awal)"
-    echo "2) TAMBAH Port Terbuka untuk UMUM (Bisa pisah koma/spasi)"
-    echo "3) HAPUS Port Terbuka untuk UMUM"
-    echo "4) TAMBAH Rule Granular (Kunci Port ke IP tertentu)"
-    echo "5) HAPUS Rule Granular"
-    echo "6) BUKA TOTAL FIREWALL (Flush & Open All Ports)"
-    echo "7) TERAPKAN & SIMPAN FIREWALL (Apply & Save)"
-    echo "8) Lihat Urutan iptables Aktif Berjalan"
-    echo "9) Keluar"
-    read -p "Masukkan pilihan [1-9]: " opsi
+    echo "1) Auto Detect & Open All Listening Ports"
+    echo "2) Add Open Port for Public (Comma / Space Separated, ex: 80, 53)"
+    echo "3) Delete (Block) Port for Public"
+    echo "4) Add Granular Port (Lock Port to Spesific IP Address)"
+    echo "5) Delete Granular Port"
+    echo "6) Flush & Open All Ports"
+    echo "7) Apply & Save"
+    echo "8) Check IP Tables Rules"
+    echo "9) Exit"
+    read -p "Enter your choices [1-9]: " opsi
 
     case $opsi in
         1)
