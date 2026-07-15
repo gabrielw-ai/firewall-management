@@ -45,6 +45,7 @@ The script manipulates kernel network tables, so it **must be run as root**:
 ```bash
 chmod +x firewall.sh
 sudo ./firewall.sh
+```
 
 ## 🤖 AI-Generated Notice
 
