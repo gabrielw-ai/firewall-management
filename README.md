@@ -46,3 +46,7 @@ The script manipulates kernel network tables, so it **must be run as root**:
 chmod +x firewall.sh
 sudo ./firewall.sh
 
+## 🤖 AI-Generated Notice
+
+> **Notice:** This utility was co-developed, refined, and optimized with the assistance of Artificial Intelligence (AI) to ensure secure shell scripting execution, proper string manipulation for IP addresses, and clean multi-distro dependency handling.
+
