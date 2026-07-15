@@ -17,6 +17,26 @@ It uses a **Staging & Commit** design, meaning changes are saved to a configurat
 
 ---
 
+## 🎛️ Menu Options Breakdown
+
+* **Option 1: Auto-detect all listening ports and add to public list**
+  Scans active network interfaces for services currently listening for traffic and batches them directly into your public allowances list.
+* **Option 2: Add public open ports**
+  Accepts a comma or space-separated list of ports to open up globally to any incoming source traffic.
+* **Option 3: Remove public open ports**
+  Allows you to safely strip specified ports out of the public allowed pool, preparing them to be closed down.
+* **Option 4: Add port rule (Whitelisting)**
+  Tethers a specific destination port tightly to an exclusive incoming IP address or network subnet block.
+* **Option 5: Remove port rule**
+  Clears customized granular IP/Port configurations from the storage layer, stripping out any trailing garbage flags effortlessly.
+* **Option 6: Disable firewall completely**
+  Performs an emergency deployment dump: flushes all tables, deletes customizations, and sets the main structural chains (`INPUT`, `FORWARD`, `OUTPUT`) back to open `ACCEPT`.
+* **Option 7: Apply and save active rules**
+  The main compiler logic. Pulls staged parameters from `/etc/manage-fw.conf`, processes loopbacks, state management, and custom whitelists, and forces the live kernel tables to save state permanently.
+* **Option 8: View live running iptables rules**
+  Dumps the explicit verbose running kernel tables matched alongside relative rule line numbers for easy evaluation.
+* **Option 9: Exit**
+  Terminates the execution interface loop safely.
 ## 🚀 How to Use
 
 ### Run the Script
@@ -25,3 +45,4 @@ The script manipulates kernel network tables, so it **must be run as root**:
 ```bash
 chmod +x firewall.sh
 sudo ./firewall.sh
+
