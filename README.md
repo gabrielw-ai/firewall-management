@@ -24,7 +24,7 @@ It uses a **Staging & Commit** design, meaning changes are saved to a configurat
 * **Option 2: Add public open ports**
   Accepts a comma or space-separated list of ports to open up globally to any incoming source traffic.
 * **Option 3: Remove public open ports**
-  Allows you to safely strip specified ports out of the public allowed pool, preparing them to be closed down.
+  Allows you to disable port access.
 * **Option 4: Add port rule (Whitelisting)**
   Tethers a specific destination port tightly to an exclusive incoming IP address or network subnet block.
 * **Option 5: Remove port rule**
