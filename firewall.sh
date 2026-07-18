@@ -118,10 +118,6 @@ apply_rules() {
                 echo "    -> [DROP] Destination Port: $r_port (Global/Public)"
             fi
         done
-        
-        # Global catch-all block for restricted zones
-        iptables -A INPUT -j REJECT --reject-with icmp-host-prohibited
-        iptables -A FORWARD -j REJECT --reject-with icmp-host-prohibited
     fi
     
     echo "[+] Opening Public Ports..."
@@ -133,6 +129,13 @@ apply_rules() {
         fi
     done
     
+    # =======================================================
+    # FIX: Global catch-all ditaruh di paling akhir fungsi
+    # =======================================================
+    echo "[+] Applying Global Catch-All Block..."
+    iptables -A INPUT -j REJECT --reject-with icmp-host-prohibited
+    iptables -A FORWARD -j REJECT --reject-with icmp-host-prohibited
+    
     echo "[+] Saving rules to system storage..."
     eval $SAVE_COMMAND > /dev/null 2>&1
     echo "[+] Success: All firewall rules deployed and persistent."
@@ -141,7 +144,7 @@ apply_rules() {
 show_status() {
     clear
     echo "========================================================="
-    echo "         DYNAMIC GRANULAR FIREWALL MANAGER v3.9          "
+    echo "        DYNAMIC GRANULAR FIREWALL MANAGER v3.9          "
     echo "========================================================="
     echo "  [PUBLIC OPEN PORTS (TCP/UDP)]"
     if [ -z "$PUBLIC_PORTS" ] || [ "$PUBLIC_PORTS" == " " ]; then
@@ -149,7 +152,7 @@ show_status() {
     else
         echo "  -> $PUBLIC_PORTS"
     fi
-    echo "---------------------------------------------------------"
+    ---------------------------------------------------------
     echo "  [GRANULAR RESTRICTED RULES (Port access restricted by IP)]"
     local check_rules=$(echo "$RESTRICTED_RULES" | tr -d ' ')
     if [ -z "$check_rules" ]; then
@@ -258,7 +261,6 @@ while true; do
             read -p "Enter port number to restrict (e.g., 53, 3306): " g_port
             read -p "Enter allowed IP/Subnet (e.g., 1.1.1.1 or 10.0.0.0/24): " g_ip
             if [ ! -z "$g_port" ] && [ ! -z "$g_ip" ]; then
-                # Membersihkan spasi tak sengaja pada input
                 g_port=$(echo "$g_port" | tr -d ' ')
                 g_ip=$(echo "$g_ip" | tr -d ' ')
                 
@@ -276,10 +278,7 @@ while true; do
             read -p "Enter target rule (e.g., 53:1.1.1.1): " del_rule
             
             if [ ! -z "$del_rule" ]; then
-                # Hapus spasi di input agar pencocokan akurat
                 del_rule=$(echo "$del_rule" | tr -d ' ')
-                
-                # Menggunakan [^ ]* untuk menyapu bersih karakter ekor tak dikenal (seperti :n atau lainnya)
                 RESTRICTED_RULES=$(echo " $RESTRICTED_RULES " | sed -E "s| $del_rule[^ ]* ||g" -e 's/  */ /g')
                 save_config
                 echo -e "\033[1;32m[+] Rule successfully cleared from the configuration file.\033[0m"
