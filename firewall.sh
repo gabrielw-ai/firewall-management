@@ -152,7 +152,7 @@ show_status() {
     else
         echo "  -> $PUBLIC_PORTS"
     fi
-    ---------------------------------------------------------
+    echo "---------------------------------------------------------"
     echo "  [GRANULAR RESTRICTED RULES (Port access restricted by IP)]"
     local check_rules=$(echo "$RESTRICTED_RULES" | tr -d ' ')
     if [ -z "$check_rules" ]; then
