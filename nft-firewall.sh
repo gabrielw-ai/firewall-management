@@ -20,22 +20,15 @@ detect_and_setup_os() {
         exit 1
     fi
 
-    # Matikan service firewall lain yang berpotensi bentrok
-    if systemctl is-active --quiet ufw 2>/dev/null; then
-        ufw disable > /dev/null 2>&1
-        systemctl stop ufw > /dev/null 2>&1
-        systemctl disable ufw > /dev/null 2>&1
-    fi
-
-    if systemctl is-active --quiet firewalld 2>/dev/null; then
-        systemctl stop firewalld > /dev/null 2>&1
-        systemctl disable firewalld > /dev/null 2>&1
-    fi
-
-    if systemctl is-active --quiet iptables 2>/dev/null; then
-        systemctl stop iptables > /dev/null 2>&1
-        systemctl disable iptables > /dev/null 2>&1
-    fi
+    # Matikan service firewall lain & fail2ban yang berpotensi bentrok
+    local services_to_stop=("ufw" "firewalld" "iptables" "fail2ban")
+    for srv in "${services_to_stop[@]}"; do
+        if systemctl is-active --quiet "$srv" 2>/dev/null || systemctl is-enabled --quiet "$srv" 2>/dev/null; then
+            echo "[+] Disabling conflicting service: $srv..."
+            systemctl stop "$srv" > /dev/null 2>&1
+            systemctl disable "$srv" > /dev/null 2>&1
+        fi
+    done
 
     # Pastikan nftables terinstall
     if ! command -v nft &> /dev/null; then
@@ -59,9 +52,8 @@ detect_and_setup_os
 # 2. PERSISTENT CONFIGURATION MANAGEMENT
 # =======================================================
 clean_ports_string() {
-    # Fungsi pembantu untuk membersihkan, memvalidasi range 1-65535, dan menghapus duplikat
     local raw_input="$1"
-    echo "$raw_input" | tr ',' ' ' | tr '\n' ' ' | tr -s ' ' | xargs -n1 | grep -E '^[0-9]+$' | awk '$1>=1 && $1<=65535' | sort -n -u | tr '\n' ' ' | sed -e 's/^[ \t]*//;s/[ \t]*$//'
+    echo "$raw_input" | tr ',' ' ' | tr '\n' ' ' | tr -s ' ' | xargs -n1 2>/dev/null | grep -E '^[0-9]+$' | awk '$1>=1 && $1<=65535' | sort -n -u | tr '\n' ' ' | sed -e 's/^[ \t]*//;s/[ \t]*$//'
 }
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -85,7 +77,40 @@ apply_rules() {
     echo -e "\n[+] Generating native nftables ruleset..."
 
     PUBLIC_PORTS=$(clean_ports_string "$PUBLIC_PORTS")
+    local check_rules=$(echo "$RESTRICTED_RULES" | tr -d ' ')
 
+    # ---------------------------------------------------
+    # FAIL-SAFE CHECK: Jika daftar port publik dan rule kosong
+    # ---------------------------------------------------
+    if [ -z "$PUBLIC_PORTS" ] && [ -z "$check_rules" ]; then
+        echo -e "\033[1;33m[!] WARNING: No public ports or restricted rules configured!\033[0m"
+        echo -e "\033[1;32m[+] Activating FAIL-SAFE mode: Opening ALL ports to prevent system lockout.\033[0m"
+        
+        cat << 'EOF' > "$NFT_CONF"
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy accept;
+    }
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+    }
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+EOF
+        nft -f "$NFT_CONF"
+        echo "[+] Fail-safe policy deployed successfully."
+        return
+    fi
+
+    # ---------------------------------------------------
+    # GENERATE FILTER RULES (Jika ada port yang dikonfigurasi)
+    # ---------------------------------------------------
     cat << 'EOF' > "$NFT_CONF"
 #!/usr/sbin/nft -f
 
@@ -98,15 +123,18 @@ table inet filter {
         # Allow Loopback & Connection Tracking
         iifname "lo" accept
         ct state established,related accept
+        ct state invalid drop
 
         # Allow ICMP (Ping v4 & v6)
         ip protocol icmp accept
         ip6 nexthdr ipv6-icmp accept
 
+        # Allow WireGuard / Tunnel interfaces
+        iifname { "wg*", "tun*", "ppp*" } accept
+
 EOF
 
     # A. Whitelist IP Rules
-    local check_rules=$(echo "$RESTRICTED_RULES" | tr -d ' ')
     if [ ! -z "$check_rules" ]; then
         echo "        # --- Granular Whitelist Rules ---" >> "$NFT_CONF"
         for rule in $RESTRICTED_RULES; do
@@ -114,9 +142,9 @@ EOF
             local ip=$(echo "$rule" | cut -d':' -f2)
             if [ ! -z "$port" ] && [ ! -z "$ip" ]; then
                 if [[ "$ip" =~ : ]]; then
-                    echo "        ip6 saddr $ip th dport $port accept" >> "$NFT_CONF"
+                    echo "        ip6 saddr $ip meta l4proto { tcp, udp } th dport $port accept" >> "$NFT_CONF"
                 else
-                    echo "        ip saddr $ip th dport $port accept" >> "$NFT_CONF"
+                    echo "        ip saddr $ip meta l4proto { tcp, udp } th dport $port accept" >> "$NFT_CONF"
                 fi
                 echo "    -> [ACCEPT] Source: $ip -> Destination Port: $port"
             fi
@@ -126,7 +154,7 @@ EOF
         echo "        # --- Block Restricted Ports Globally ---" >> "$NFT_CONF"
         for r_port in $restricted_ports; do
             if [ ! -z "$r_port" ]; then
-                echo "        th dport $r_port drop" >> "$NFT_CONF"
+                echo "        meta l4proto { tcp, udp } th dport $r_port drop" >> "$NFT_CONF"
                 echo "    -> [DROP] Destination Port: $r_port (Public Access Blocked)"
             fi
         done
@@ -135,16 +163,16 @@ EOF
     # B. Open Public Ports
     if [ ! -z "$PUBLIC_PORTS" ]; then
         local formatted_public_ports=$(echo "$PUBLIC_PORTS" | tr ' ' ',')
-        echo "        # --- Open Public Ports ---" >> "$NFT_CONF"
+        echo "        # --- Open Public Ports (TCP & UDP) ---" >> "$NFT_CONF"
         if [[ "$formatted_public_ports" =~ "," ]]; then
-            echo "        th dport { $formatted_public_ports } accept" >> "$NFT_CONF"
+            echo "        meta l4proto { tcp, udp } th dport { $formatted_public_ports } accept" >> "$NFT_CONF"
         else
-            echo "        th dport $formatted_public_ports accept" >> "$NFT_CONF"
+            echo "        meta l4proto { tcp, udp } th dport $formatted_public_ports accept" >> "$NFT_CONF"
         fi
         echo "    -> [ACCEPT] Public Ports Open: $formatted_public_ports"
     fi
 
-    # C. Default Catch-All Block
+    # C. Default Catch-All Block & Forward Rules
     cat << 'EOF' >> "$NFT_CONF"
 
         # --- Default Catch-All Drop ---
@@ -154,8 +182,8 @@ EOF
     chain forward {
         type filter hook forward priority filter; policy accept;
         ct state established,related accept
-        iifname { "tun*", "wg*", "ppp*" } accept
-        reject with icmpx type admin-prohibited
+        iifname { "wg*", "tun*", "ppp*" } accept
+        oifname { "wg*", "tun*", "ppp*" } accept
     }
 
     chain output {
@@ -177,11 +205,11 @@ EOF
 show_status() {
     clear
     echo "========================================================="
-    echo "       DYNAMIC GRANULAR FIREWALL MANAGER (NFTABLES v4.1) "
+    echo "        DYNAMIC GRANULAR FIREWALL MANAGER (NFTABLES v4.3) "
     echo "========================================================="
     echo "  [PUBLIC OPEN PORTS (TCP/UDP)]"
     if [ -z "$PUBLIC_PORTS" ]; then
-        echo "  -> (None)"
+        echo "  -> (None - System in Open-All / Unrestricted mode)"
     else
         echo "  -> $PUBLIC_PORTS"
     fi
@@ -213,7 +241,7 @@ while true; do
     echo "3) Remove public open ports"
     echo "4) Add port rule (restrict port to specific IP/Subnet)"
     echo "5) Remove port rule"
-    echo "6) RESET / FLUSH ALL (Clear all rules and config)"
+    echo "6) RESET / FLUSH ALL (Open ALL ports and clear config)"
     echo "7) Apply and save active rules"
     echo "8) View live running nftables ruleset"
     echo "9) Exit"
@@ -222,10 +250,11 @@ while true; do
     case $opsi in
         1)
             echo -e "\n[+] Scanning system for active listening ports..."
+            
             if command -v ss &> /dev/null; then
-                detected_list=$(ss -tulpn H | awk '{print $5}' | sed -E 's/.*://' | grep -E '^[0-9]+$' | awk '$1>=1 && $1<=65535' | sort -n -u | tr '\n' ' ')
+                detected_list=$(ss -tulpnH | awk '{print $5}' | sed -E 's/.*:([0-9]+)$/\1/' | grep -E '^[0-9]+$' | awk '$1>=1 && $1<=65535' | sort -n -u | tr '\n' ' ')
             else
-                detected_list=$(netstat -tulpn | grep LISTEN | awk '{print $4}' | awk -F':' '{print $NF}' | grep -E '^[0-9]+$' | awk '$1>=1 && $1<=65535' | sort -n -u | tr '\n' ' ')
+                detected_list=$(netstat -tulpn 2>/dev/null | grep LISTEN | awk '{print $4}' | sed -E 's/.*:([0-9]+)$/\1/' | grep -E '^[0-9]+$' | awk '$1>=1 && $1<=65535' | sort -n -u | tr '\n' ' ')
             fi
 
             if [ -z "$detected_list" ] || [ "$detected_list" == " " ]; then
@@ -305,17 +334,32 @@ while true; do
             read -p "Press [Enter] to continue..."
             ;;
         6)
-            read -p "CONFIRM RESET: Flush all rules and erase saved config? (y/n): " konfirmasi
+            read -p "CONFIRM RESET: Open ALL ports and erase saved config? (y/n): " konfirmasi
             if [[ "$konfirmasi" == "y" || "$konfirmasi" == "Y" ]]; then
-                nft flush ruleset
                 cat << 'EOF' > "$NFT_CONF"
 #!/usr/sbin/nft -f
+
 flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy accept;
+    }
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+    }
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
 EOF
+                nft -f "$NFT_CONF"
+
                 PUBLIC_PORTS=""
                 RESTRICTED_RULES=""
                 save_config
-                echo "[+] Firewall reset complete. All rules flushed and config cleared."
+
+                echo "[+] Firewall reset complete. All rules set to ACCEPT (All ports opened)."
                 sleep 2
             fi
             ;;
